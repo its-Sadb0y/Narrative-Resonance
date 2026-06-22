@@ -15,10 +15,6 @@ from emotion_engine import (
     _HAS_TRANSFORMERS,
 )
 
-# ─────────────────────────────────────────────
-# Page config & global CSS
-# ─────────────────────────────────────────────
-
 st.set_page_config(
     page_title="Emotion Palette",
     page_icon="🎨",
@@ -78,16 +74,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────
-# Header
-# ─────────────────────────────────────────────
-
 st.title("🎨 Emotion Palette Generator")
 st.caption("Write any text — discover its emotional color palette, arc, and highlighted keywords.")
 
-# ─────────────────────────────────────────────
-# Sidebar: settings
-# ─────────────────────────────────────────────
 
 with st.sidebar:
     st.header("⚙️ Settings")
@@ -122,10 +111,6 @@ Each emotion maps to a region on the HSL color wheel:
 - **Lightness** ← positive vs. negative balance
 """)
 
-# ─────────────────────────────────────────────
-# Input
-# ─────────────────────────────────────────────
-
 text_input = st.text_area(
     "Your text",
     placeholder="e.g., The gentle rain brought back childhood memories of a quieter time...",
@@ -139,10 +124,6 @@ with col_btn:
 with col_hint:
     st.caption("Tip: longer texts produce richer emotional arcs.")
 
-# ─────────────────────────────────────────────
-# Analysis & output
-# ─────────────────────────────────────────────
-
 if generate:
     if not text_input.strip():
         st.warning("Please enter some text first.")
@@ -155,7 +136,6 @@ if generate:
     emotions = result["emotions"]
     palette  = result["palette"]
 
-    # ── 1. Palette (hero section) ────────────────────────────────
     st.markdown("<hr class='divider'>", unsafe_allow_html=True)
     st.subheader("🎨 Color Palette")
 
@@ -170,12 +150,10 @@ if generate:
 
     st.markdown(swatches_html + hex_row, unsafe_allow_html=True)
 
-    # CSS export
     css_vars = "\n".join(f"  --palette-{i+1}: {c};" for i, c in enumerate(palette))
     with st.expander("Copy as CSS variables"):
         st.code(f":root {{\n{css_vars}\n}}", language="css")
 
-    # ── 2. Emotion breakdown ─────────────────────────────────────
     st.markdown("<hr class='divider'>", unsafe_allow_html=True)
     left, right = st.columns([1, 1])
 
@@ -214,7 +192,6 @@ if generate:
             unsafe_allow_html=True
         )
 
-    # ── 3. Emotional Arc ─────────────────────────────────────────
     st.markdown("<hr class='divider'>", unsafe_allow_html=True)
     st.subheader("📈 Emotional Arc")
 
@@ -250,7 +227,6 @@ if generate:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # tooltip: hover روی label جمله می‌ده
         with st.expander("Sentence breakdown"):
             for i, item in enumerate(sentence_data):
                 c = item["color"]
@@ -261,7 +237,6 @@ if generate:
                 )
                 st.markdown(f"**S{i+1}** {badge} &nbsp; *{item['sentence']}*", unsafe_allow_html=True)
 
-    # ── 4. Keyword Highlighting ──────────────────────────────────
     st.markdown("<hr class='divider'>", unsafe_allow_html=True)
     st.subheader("📝 Keyword Highlighting")
     st.caption("Emotional keywords are highlighted — hover for sentence-level analysis.")
