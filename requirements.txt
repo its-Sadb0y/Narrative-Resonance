@@ -1,0 +1,12 @@
+# ── Core (required) ───────────────────────────────────────────────────
+streamlit>=1.35.0
+plotly>=5.20.0
+
+# ── Precise mode: Claude API (optional) ───────────────────────────────
+# export ANTHROPIC_API_KEY="sk-ant-..."
+anthropic>=0.40.0
+
+# ── Balanced mode: local transformer (optional) ────────────────────────
+# pip install transformers torch
+# transformers>=4.40.0
+# torch>=2.0.0
