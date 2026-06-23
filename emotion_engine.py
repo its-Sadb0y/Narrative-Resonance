@@ -1,26 +1,12 @@
-"""
-emotion_engine.py — Core emotion analysis and color palette mapping.
-
-سه سطح تحلیل:
-  fast     → keyword-based (بدون نیاز به هیچ چیز اضافه)
-  balanced → transformer محلی (نیاز به: pip install transformers torch)
-  precise  → Claude API     (نیاز به: ANTHROPIC_API_KEY)
-"""
-
 import os
 import json
 import re
 import colorsys
-import sys
-import io
-from typing import Dict, List
+import logging
+from typing import Dict, List, Optional, Tuple, Pattern
 
-if sys.platform == "win32":
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-
-# ─────────────────────────────────────────────
-# Constants
-# ─────────────────────────────────────────────
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
 
 EMOTIONS: List[str] = [
     "joy", "calm", "nostalgia", "anxiety",
@@ -41,7 +27,6 @@ EMOTION_HUE_MAP: Dict[str, int] = {
     "tenderness": 340,
 }
 
-# رنگ نمایشی ثابت برای هر احساس (برای نمودار arc و legend)
 EMOTION_DISPLAY_COLORS: Dict[str, str] = {
     "joy":        "#FFD700",
     "calm":       "#4A90D9",
@@ -72,18 +57,25 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
                    "compassionate", "gentle", "fond", "devoted"],
 }
 
-# کلماتی که negation می‌کنن احساس بعدیشون رو
+
 _NEGATION_WORDS = {"not", "no", "never", "neither", "nor", "hardly", "barely", "scarcely"}
 
-# ─────────────────────────────────────────────
-# Optional: Transformer model
-# ─────────────────────────────────────────────
 
-_model = None
-_tokenizer = None
-_HAS_TRANSFORMERS = False
+_SINGLE_KEYWORDS: Dict[str, str] = {}
+_PHRASE_KEYWORDS: List[Tuple[Pattern, str]] = []
 
-# این mapping خارج از try block تعریف شده تا همیشه قابل دسترس باشه
+for _emotion, _kws in _KEYWORD_MAP.items():
+    for _kw in _kws:
+        if " " in _kw or "-" in _kw:
+            _PHRASE_KEYWORDS.append(
+                (re.compile(r"\b" + re.escape(_kw) + r"\b", re.IGNORECASE), _emotion)
+            )
+        else:
+            _SINGLE_KEYWORDS[_kw] = _emotion
+
+
+_MODEL_NAME = "j-hartmann/emotion-english-distilroberta-base"
+
 _TRANSFORMER_EMOTION_MAP: Dict[str, str] = {
     "anger":   "anger",
     "disgust": "anger",
@@ -94,23 +86,40 @@ _TRANSFORMER_EMOTION_MAP: Dict[str, str] = {
     "surprise":"wonder",
 }
 
-try:
-    from transformers import AutoTokenizer, AutoModelForSequenceClassification
-    import torch
+_TRANSFORMER_LABELS = ["anger", "disgust", "fear", "joy", "neutral", "sadness", "surprise"]
 
-    _model_name = "j-hartmann/emotion-english-distilroberta-base"
-    _tokenizer = AutoTokenizer.from_pretrained(_model_name)
-    _model = AutoModelForSequenceClassification.from_pretrained(_model_name)
-    _HAS_TRANSFORMERS = True
-    print("[OK] Transformer model loaded.")
-except ImportError:
-    print("[INFO] Transformers not installed — using keyword engine (fast mode).")
-except Exception as e:
-    print(f"[WARN] Transformer load failed: {e}")
+_model = None
+_tokenizer = None
+_model_load_attempted = False
+_model_available = False
 
-# ─────────────────────────────────────────────
-# Internal analysis helpers
-# ─────────────────────────────────────────────
+
+def _ensure_model() -> bool:
+    """
+    Load the transformer once, on first use, and cache the outcome.
+
+    Returns True if the model is usable. A failed/missing install is recorded
+    so we don't pay the import cost again on every call.
+    """
+    global _model, _tokenizer, _model_load_attempted, _model_available
+    if _model_load_attempted:
+        return _model_available
+
+    _model_load_attempted = True
+    try:
+        from transformers import AutoTokenizer, AutoModelForSequenceClassification
+        import torch
+
+        _tokenizer = AutoTokenizer.from_pretrained(_MODEL_NAME)
+        _model = AutoModelForSequenceClassification.from_pretrained(_MODEL_NAME)
+        _model_available = True
+        logger.info("Transformer model loaded (%s).", _MODEL_NAME)
+    except ImportError:
+        logger.info("transformers not installed — balanced mode falls back to keywords.")
+    except Exception as e:
+        logger.warning("Transformer load failed: %s", e)
+
+    return _model_available
 
 def _check_negation(words: List[str], keyword_index: int, window: int = 3) -> bool:
     """
@@ -123,28 +132,20 @@ def _check_negation(words: List[str], keyword_index: int, window: int = 3) -> bo
 
 
 def _analyze_with_keywords(text: str) -> Dict[str, float]:
-    """
-    تحلیل keyword-based با negation detection.
-    مثال: 'not angry' → anger افزایش پیدا نمی‌کنه
-    """
-    words = re.findall(r'\b\w+\b', text.lower())
+    lowered = text.lower()
+    words = re.findall(r"\b\w+\b", lowered)
     scores = {e: 0.0 for e in EMOTIONS}
 
-    for emotion, keywords in _KEYWORD_MAP.items():
-        for kw in keywords:
-            kw_words = kw.split()
-            if len(kw_words) == 1:
-                # single-word keyword
-                for idx, word in enumerate(words):
-                    if word == kw:
-                        if not _check_negation(words, idx):
-                            scores[emotion] += 0.25
-            else:
-                # multi-word phrase (مثل "old days")
-                phrase_str = " ".join(kw_words)
-                count = text.lower().count(phrase_str)
-                if count > 0:
-                    scores[emotion] += count * 0.25
+    for idx, word in enumerate(words):
+        emotion = _SINGLE_KEYWORDS.get(word)
+        if emotion and not _check_negation(words, idx):
+            scores[emotion] += 0.25
+
+    for pattern, emotion in _PHRASE_KEYWORDS:
+        for match in pattern.finditer(lowered):
+            preceding_words = re.findall(r"\b\w+\b", lowered[:match.start()])
+            if not _check_negation(preceding_words, len(preceding_words)):
+                scores[emotion] += 0.25
 
     max_score = max(scores.values())
     if max_score > 0:
@@ -153,10 +154,10 @@ def _analyze_with_keywords(text: str) -> Dict[str, float]:
 
 
 def _analyze_with_transformer(text: str) -> Dict[str, float]:
-    if not _HAS_TRANSFORMERS or _model is None or _tokenizer is None:
+    if not _ensure_model():
         return _analyze_with_keywords(text)
 
-    sentences = [s.strip() for s in re.split(r'[.!?]+', text) if len(s.strip()) > 5]
+    sentences = [s.strip() for s in re.split(r"[.!?]+", text) if len(s.strip()) > 5]
     if not sentences:
         return _analyze_with_keywords(text)
 
@@ -168,24 +169,38 @@ def _analyze_with_transformer(text: str) -> Dict[str, float]:
             with torch.no_grad():
                 outputs = _model(**inputs)
             probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
-            label_names = ["anger", "disgust", "fear", "joy", "neutral", "sadness", "surprise"]
-            for i, lbl in enumerate(label_names):
+            for i, lbl in enumerate(_TRANSFORMER_LABELS):
                 mapped = _TRANSFORMER_EMOTION_MAP.get(lbl)
                 if mapped:
                     aggregated[mapped] += float(probs[0][i].item())
 
-        n = len(sentences)
+        n = min(len(sentences), 10)
         aggregated = {k: min(v / n, 1.0) for k, v in aggregated.items()}
 
-        # اگه مدل نتیجه‌ی ضعیفی داد، keyword رو blend کن
         if max(aggregated.values()) < 0.3:
             kw = _analyze_with_keywords(text)
             aggregated = {k: aggregated[k] * 0.6 + kw.get(k, 0) * 0.4 for k in EMOTIONS}
 
         return aggregated
     except Exception as e:
-        print(f"[WARN] Transformer error: {e}")
+        logger.warning("Transformer inference error: %s", e)
         return _analyze_with_keywords(text)
+
+
+def _extract_json_object(raw: str) -> Optional[dict]:
+    """Parse a JSON object from a model reply, tolerating fences or stray prose."""
+    cleaned = raw.strip()
+    cleaned = cleaned.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                return None
+    return None
 
 
 def _analyze_with_api(text: str) -> Dict[str, float]:
@@ -207,42 +222,29 @@ def _analyze_with_api(text: str) -> Dict[str, float]:
             messages=[{"role": "user", "content": prompt}],
         )
         raw = response.content[0].text.strip()
-        raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-        data = json.loads(raw)
-        return {e: float(data.get(e, 0.0)) for e in EMOTIONS}
-    except Exception as e:
-        print(f"[WARN] API error: {e} — falling back to local model.")
+        data = _extract_json_object(raw)
+        if data is None:
+            logger.warning("API returned unparseable JSON — falling back to local model.")
+            return _analyze_with_transformer(text)
+        # Clamp every value into [0, 1] and default missing keys to 0.
+        return {e: max(0.0, min(1.0, float(data.get(e, 0.0)))) for e in EMOTIONS}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("API error: %s — falling back to local model.", e)
         return _analyze_with_transformer(text)
 
 
-# ─────────────────────────────────────────────
-# Public API
-# ─────────────────────────────────────────────
-
 def analyze_emotions(text: str, mode: str = "balanced") -> Dict[str, float]:
-    """
-    تحلیل احساسات یه متن.
-    mode: "fast" | "balanced" | "precise"
-    """
     if not text or len(text.strip()) < 3:
         return {e: 0.1 for e in EMOTIONS}
 
     if mode == "precise" and os.environ.get("ANTHROPIC_API_KEY"):
         return _analyze_with_api(text)
-    if mode == "fast" or not _HAS_TRANSFORMERS:
+    if mode == "fast":
         return _analyze_with_keywords(text)
     return _analyze_with_transformer(text)
 
 
 def emotions_to_palette(emotions: Dict[str, float], n_colors: int = 5) -> List[str]:
-    """
-    دیکشنری احساسات → لیست رنگ‌های HEX.
-
-    منطق نگاشت:
-      Hue        ← نوع احساس غالب (با کمی drift برای تنوع در پالت)
-      Saturation ← شدت میانگین احساسات (قوی‌تر = پررنگ‌تر)
-      Lightness  ← تعادل مثبت/منفی (مثبت = روشن‌تر)
-    """
     if not emotions:
         raise ValueError("emotions cannot be empty")
 
@@ -256,7 +258,7 @@ def emotions_to_palette(emotions: Dict[str, float], n_colors: int = 5) -> List[s
     palette = []
     for i in range(n_colors):
         primary, _ = top3[i % len(top3)]
-        hue = (EMOTION_HUE_MAP[primary] + (i * 15) - (n_colors * 7)) % 360
+        hue = (EMOTION_HUE_MAP.get(primary, 0) + (i * 15) - (n_colors * 7)) % 360
 
         avg_intensity = total / len(emotions)
         saturation = min(0.35 + avg_intensity * 0.45, 0.85)
@@ -277,7 +279,6 @@ def emotions_to_palette(emotions: Dict[str, float], n_colors: int = 5) -> List[s
 
 
 def text_to_palette(text: str, n_colors: int = 5, mode: str = "balanced") -> dict:
-    """تابع high-level: متن → احساسات + پالت رنگی."""
     emotions = analyze_emotions(text, mode=mode)
     palette = emotions_to_palette(emotions, n_colors=n_colors)
     dominant = max(emotions.items(), key=lambda x: x[1])
@@ -290,11 +291,7 @@ def text_to_palette(text: str, n_colors: int = 5, mode: str = "balanced") -> dic
 
 
 def analyze_emotions_by_sentence(text: str, mode: str = "balanced") -> List[Dict]:
-    """
-    متن رو جمله‌به‌جمله تحلیل می‌کنه.
-    برای رسم Emotional Arc و keyword highlighting استفاده می‌شه.
-    """
-    sentences = [s.strip() for s in re.split(r'[.!?]+', text) if len(s.strip()) > 5]
+    sentences = [s.strip() for s in re.split(r"[.!?]+", text) if len(s.strip()) > 5]
     if not sentences:
         return []
 
@@ -314,14 +311,9 @@ def analyze_emotions_by_sentence(text: str, mode: str = "balanced") -> List[Dict
 
 
 def highlight_keywords_html(text: str, sentence_analysis: List[Dict]) -> str:
-    """
-    کلمات کلیدی احساسی رو با رنگ و tooltip HTML هایلایت می‌کنه.
-    خروجی: رشته‌ی HTML آماده برای نمایش.
-    """
     if not sentence_analysis:
         return text
 
-    # ساخت keyword → {color, emotion}
     keyword_color_map: Dict[str, Dict] = {}
     for emotion, keywords in _KEYWORD_MAP.items():
         hue = EMOTION_HUE_MAP[emotion]
@@ -330,8 +322,7 @@ def highlight_keywords_html(text: str, sentence_analysis: List[Dict]) -> str:
         for kw in keywords:
             keyword_color_map[kw] = {"color": hex_bg, "emotion": emotion}
 
-    # پردازش جمله به جمله
-    parts = re.split(r'([.!?]+)', text)
+    parts = re.split(r"([.!?]+)", text)
     output_parts = []
 
     for i in range(0, len(parts), 2):
@@ -341,7 +332,6 @@ def highlight_keywords_html(text: str, sentence_analysis: List[Dict]) -> str:
         if not sent_raw:
             continue
 
-        # پیدا کردن analysis متناظر
         analysis = next(
             (item for item in sentence_analysis if item["sentence"] in sent_raw or sent_raw in item["sentence"]),
             None
@@ -351,22 +341,19 @@ def highlight_keywords_html(text: str, sentence_analysis: List[Dict]) -> str:
             output_parts.append(sent_raw + punct)
             continue
 
-        # ساخت tooltip
         top_emotions = sorted(analysis["emotions"].items(), key=lambda x: x[1], reverse=True)
         tooltip = " | ".join(
             f"{e.capitalize()}: {s*100:.0f}%"
             for e, s in top_emotions[:4] if s > 0.05
         )
 
-        # هایلایت کلمات
-        words = re.split(r'(\s+)', sent_raw)
-        word_list = [w for w in re.findall(r'\b\w+\b', sent_raw)]
+        words = re.split(r"(\s+)", sent_raw)
+        word_list = [w for w in re.findall(r"\b\w+\b", sent_raw)]
         highlighted = []
 
         for word in words:
-            clean = re.sub(r'[^\w]', '', word.lower())
+            clean = re.sub(r"[^\w]", "", word.lower())
             if clean in keyword_color_map:
-                # چک negation: پیدا کردن index کلمه در لیست
                 try:
                     idx = word_list.index(clean)
                     negated = _check_negation(word_list, idx)
