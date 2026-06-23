@@ -1,8 +1,3 @@
-"""
-app.py — Emotion Palette Generator
-Streamlit UI: palette extraction + emotional arc + keyword highlighting
-"""
-
 import streamlit as st
 import plotly.graph_objects as go
 
@@ -12,7 +7,7 @@ from emotion_engine import (
     highlight_keywords_html,
     EMOTIONS,
     EMOTION_DISPLAY_COLORS,
-    _HAS_TRANSFORMERS,
+    transformers_available,
 )
 
 st.set_page_config(
@@ -74,21 +69,23 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+
 st.title("🎨 Emotion Palette Generator")
 st.caption("Write any text — discover its emotional color palette, arc, and highlighted keywords.")
-
 
 with st.sidebar:
     st.header("⚙️ Settings")
 
+    has_transformers = transformers_available()
+
     n_colors = st.slider("Palette size", min_value=3, max_value=8, value=5)
 
     mode_labels = {"fast": "⚡ Fast (keywords only)"}
-    if _HAS_TRANSFORMERS:
+    if has_transformers:
         mode_labels["balanced"] = "🧠 Balanced (transformer)"
     mode_labels["precise"] = "🎯 Precise (Claude API)"
 
-    default_mode = "balanced" if _HAS_TRANSFORMERS else "fast"
+    default_mode = "balanced" if has_transformers else "fast"
     mode = st.selectbox(
         "Analysis mode",
         options=list(mode_labels.keys()),
