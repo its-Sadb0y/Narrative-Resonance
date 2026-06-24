@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import html
 import colorsys
 import logging
 from typing import Dict, List, Optional, Tuple, Pattern
@@ -8,13 +9,22 @@ from typing import Dict, List, Optional, Tuple, Pattern
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
+
 EMOTIONS: List[str] = [
     "joy", "calm", "nostalgia", "anxiety",
     "melancholy", "anger", "wonder", "tenderness",
+    "fear", "disgust", "hope", "awe",
 ]
 
-POSITIVE_EMOTIONS = {"joy", "calm", "tenderness", "wonder"}
-NEGATIVE_EMOTIONS = {"anxiety", "melancholy", "anger"}
+
+NEUTRAL = "neutral"
+NEUTRAL_COLOR = "#6b6b70"
+
+
+_NEUTRAL_FLOOR = 0.15
+
+POSITIVE_EMOTIONS = {"joy", "calm", "tenderness", "wonder", "hope", "awe"}
+NEGATIVE_EMOTIONS = {"anxiety", "melancholy", "anger", "fear", "disgust"}
 
 EMOTION_HUE_MAP: Dict[str, int] = {
     "joy":        50,
@@ -25,6 +35,10 @@ EMOTION_HUE_MAP: Dict[str, int] = {
     "anger":      0,
     "wonder":     290,
     "tenderness": 340,
+    "fear":       210,
+    "disgust":    70,
+    "hope":       140,
+    "awe":        260,
 }
 
 EMOTION_DISPLAY_COLORS: Dict[str, str] = {
@@ -36,7 +50,12 @@ EMOTION_DISPLAY_COLORS: Dict[str, str] = {
     "anger":      "#E74C3C",
     "wonder":     "#1ABC9C",
     "tenderness": "#FF69B4",
+    "fear":       "#2C3E50",
+    "disgust":    "#808000",
+    "hope":       "#2ECC71",
+    "awe":        "#5D3FD3",
 }
+
 
 _LEXICON: Dict[str, Dict[str, float]] = {
     "joy": {
@@ -48,6 +67,7 @@ _LEXICON: Dict[str, Dict[str, float]] = {
         "content": 0.4, "jubilant": 0.95, "merry": 0.6, "upbeat": 0.6,
         "gleeful": 0.8, "blissful": 0.9, "bliss": 0.9, "radiant": 0.55,
         "smiling": 0.5, "laughter": 0.6, "laughing": 0.5,
+        "laugh": 0.5, "smile": 0.5, "grin": 0.55,
     },
     "calm": {
         "calm": 0.8, "calmness": 0.8, "calmly": 0.7, "peaceful": 0.8, "peace": 0.7,
@@ -68,12 +88,10 @@ _LEXICON: Dict[str, Dict[str, float]] = {
     "anxiety": {
         "anxious": 0.85, "anxiety": 0.9, "worried": 0.75, "worry": 0.7,
         "worries": 0.7, "nervous": 0.75, "nervousness": 0.75, "stress": 0.7,
-        "stressed": 0.8, "stressful": 0.75, "fear": 0.7, "fearful": 0.8,
-        "afraid": 0.75, "scared": 0.8, "frightened": 0.85, "panic": 0.9,
-        "panicked": 0.9, "dread": 0.85, "uneasy": 0.7, "tense": 0.7,
+        "stressed": 0.8, "stressful": 0.75, "uneasy": 0.7, "tense": 0.7,
         "tension": 0.65, "apprehensive": 0.8, "apprehension": 0.8, "distressed": 0.85,
         "distress": 0.8, "restless": 0.65, "jittery": 0.8, "overwhelmed": 0.7,
-        "terrified": 0.95, "alarmed": 0.8, "on edge": 0.75,
+        "on edge": 0.75, "fretful": 0.7, "edgy": 0.65,
     },
     "melancholy": {
         "sad": 0.75, "sadness": 0.8, "sadly": 0.7, "melancholy": 0.95,
@@ -84,6 +102,7 @@ _LEXICON: Dict[str, Dict[str, float]] = {
         "heartbreak": 0.9, "miserable": 0.9, "misery": 0.9, "hopeless": 0.9,
         "hopelessness": 0.9, "dejected": 0.85, "downcast": 0.75, "somber": 0.7,
         "weeping": 0.75, "crying": 0.6, "forlorn": 0.85, "bleak": 0.7, "woe": 0.85,
+        "cry": 0.55, "sob": 0.7, "sobbing": 0.7, "mourn": 0.8, "wept": 0.7, "tearful": 0.7,
     },
     "anger": {
         "angry": 0.85, "anger": 0.9, "angrily": 0.8, "furious": 0.95, "fury": 0.95,
@@ -92,17 +111,16 @@ _LEXICON: Dict[str, Dict[str, float]] = {
         "outrage": 0.9, "resentful": 0.8, "resentment": 0.8, "hostile": 0.8,
         "hostility": 0.8, "frustrated": 0.7, "frustration": 0.7, "livid": 0.95,
         "irate": 0.9, "enraged": 1.0, "seething": 0.9, "indignant": 0.8,
-        "bitter": 0.7, "hatred": 0.9, "hate": 0.85, "disgusted": 0.8, "disgust": 0.8,
-        "contempt": 0.8, "wrath": 0.9,
+        "bitter": 0.7, "hatred": 0.9, "hate": 0.85, "wrath": 0.9,
     },
     "wonder": {
         "wonder": 0.8, "wonderful": 0.55, "wondrous": 0.85, "amazing": 0.75,
         "amazed": 0.8, "amazement": 0.85, "astonishing": 0.85, "astonished": 0.85,
-        "astonishment": 0.85, "surreal": 0.8, "magical": 0.75, "awe": 0.9,
-        "awestruck": 0.95, "marvel": 0.8, "marvelous": 0.7, "marvellous": 0.7,
+        "astonishment": 0.85, "surreal": 0.8, "magical": 0.75,
+        "marvel": 0.8, "marvelous": 0.7, "marvellous": 0.7,
         "mysterious": 0.7, "mystery": 0.55, "fascinating": 0.75, "fascinated": 0.75,
         "fascination": 0.75, "breathtaking": 0.9, "spellbound": 0.85,
-        "enchanting": 0.8, "enchanted": 0.8, "miraculous": 0.85, "sublime": 0.85,
+        "enchanting": 0.8, "enchanted": 0.8,
         "mind-blowing": 0.85, "stunning": 0.7, "stunned": 0.65, "dazzling": 0.8,
         "dazzled": 0.75,
     },
@@ -117,12 +135,42 @@ _LEXICON: Dict[str, Dict[str, float]] = {
         "comforting": 0.6, "nurturing": 0.7, "kindness": 0.6, "beloved": 0.85,
         "dear": 0.45, "intimacy": 0.7, "intimate": 0.65,
     },
+    "fear": {
+        "fear": 0.7, "fearful": 0.8, "afraid": 0.8, "scared": 0.8,
+        "frightened": 0.85, "frightening": 0.8, "panic": 0.9, "panicked": 0.9,
+        "dread": 0.85, "dreadful": 0.75, "terrified": 0.95, "terror": 0.95,
+        "terrifying": 0.9, "alarmed": 0.8, "horror": 0.85, "horrified": 0.9,
+        "horrifying": 0.9, "petrified": 0.95, "spooked": 0.7, "scary": 0.7,
+    },
+    "disgust": {
+        "disgust": 0.85, "disgusted": 0.85, "disgusting": 0.85, "revolting": 0.85,
+        "revolted": 0.85, "vile": 0.8, "putrid": 0.85, "foul": 0.75,
+        "nauseating": 0.85, "nauseated": 0.8, "nauseous": 0.8, "repulsive": 0.85,
+        "repulsed": 0.8, "gross": 0.6, "sickening": 0.8, "repugnant": 0.85,
+        "rancid": 0.8, "loathing": 0.85, "loathsome": 0.85, "queasy": 0.6,
+        "contempt": 0.65, "rotten": 0.55,
+    },
+    "hope": {
+        "hope": 0.8, "hopeful": 0.85, "hopefully": 0.7, "optimistic": 0.8,
+        "optimism": 0.8, "eager": 0.6, "anticipation": 0.6, "anticipate": 0.55,
+        "aspire": 0.65, "aspiring": 0.65, "aspiration": 0.65, "faith": 0.5,
+        "promising": 0.6, "encouraged": 0.6, "encouraging": 0.6, "uplifted": 0.7,
+        "uplifting": 0.7, "reassured": 0.6, "expectant": 0.6, "looking forward": 0.65,
+    },
+    "awe": {
+        "awe": 0.9, "awed": 0.9, "awestruck": 0.95, "sublime": 0.85,
+        "reverent": 0.8, "reverence": 0.8, "majestic": 0.85, "miraculous": 0.85,
+        "sacred": 0.7, "profound": 0.7, "monumental": 0.7, "immense": 0.6,
+        "magnificent": 0.8, "glorious": 0.75, "grandeur": 0.8, "vast": 0.55,
+    },
 }
+
 
 _NEGATION_WORDS = {
     "not", "no", "never", "neither", "nor", "none", "nothing", "without",
     "hardly", "barely", "scarcely",
 }
+
 
 _BOOSTERS = {
     "incredibly": 1.6, "extremely": 1.7, "absolutely": 1.6, "utterly": 1.6,
@@ -134,6 +182,7 @@ _DIMINISHERS = {
     "slightly": 0.5, "somewhat": 0.6, "rather": 0.75, "fairly": 0.75,
     "mildly": 0.5, "kinda": 0.6, "vaguely": 0.55, "marginally": 0.5,
 }
+
 
 _SINGLE_KEYWORDS: Dict[str, Tuple[str, float]] = {}
 _PHRASE_KEYWORDS: List[Tuple[Pattern, str, float]] = []
@@ -148,24 +197,32 @@ for _emotion, _entries in _LEXICON.items():
         else:
             _SINGLE_KEYWORDS[_term] = (_emotion, _weight)
 
+
 _MODEL_NAME = "j-hartmann/emotion-english-distilroberta-base"
 
-# Maps the model's 7 labels onto our taxonomy. NOTE: the model has no signal
-# for "nostalgia" or "tenderness" — those are sourced from the lexicon instead.
+
 _TRANSFORMER_EMOTION_MAP: Dict[str, str] = {
     "anger":    "anger",
-    "disgust":  "anger",
-    "fear":     "anxiety",
+    "fear":     "fear",
     "joy":      "joy",
-    "neutral":  "calm",
     "sadness":  "melancholy",
     "surprise": "wonder",
 }
+
+
 _TRANSFORMER_LABELS = ["anger", "disgust", "fear", "joy", "neutral", "sadness", "surprise"]
+
+
 _KEYWORD_OVERLAY: Dict[str, float] = {
     "nostalgia": 0.85,
     "tenderness": 0.85,
-    "calm": 0.60,
+    "calm": 0.95,
+    "melancholy": 0.80,
+    "wonder": 0.60,
+    "anxiety": 0.85,
+    "hope": 0.80,
+    "awe": 0.70,
+    "disgust": 0.80,
 }
 
 _model = None
@@ -190,7 +247,7 @@ def _ensure_model() -> bool:
     _model_load_attempted = True
     try:
         from transformers import AutoTokenizer, AutoModelForSequenceClassification
-        import torch  # noqa: F401
+        import torch
 
         _tokenizer = AutoTokenizer.from_pretrained(_MODEL_NAME)
         _model = AutoModelForSequenceClassification.from_pretrained(_MODEL_NAME)
@@ -198,10 +255,11 @@ def _ensure_model() -> bool:
         logger.info("Transformer model loaded (%s).", _MODEL_NAME)
     except ImportError:
         logger.info("transformers not installed — balanced mode falls back to keywords.")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("Transformer load failed: %s", e)
 
     return _model_available
+
 
 _ABBREVIATIONS = {
     "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc",
@@ -211,7 +269,6 @@ _SENT_SENTINEL = "\u0000"
 
 
 def _expand_contractions(text: str) -> str:
-    """Normalise negated contractions so 'wasn't' tokenises to 'was not'."""
     text = re.sub(r"\bcan['’]t\b", "can not", text, flags=re.IGNORECASE)
     text = re.sub(r"\bwon['’]t\b", "will not", text, flags=re.IGNORECASE)
     text = re.sub(r"\bshan['’]t\b", "shall not", text, flags=re.IGNORECASE)
@@ -222,9 +279,12 @@ def _expand_contractions(text: str) -> str:
 
 def _split_sentences(text: str) -> List[str]:
     protected = text
+
+    protected = re.sub(r"\b([A-Za-z])\.([A-Za-z])\.",
+                       r"\1" + _SENT_SENTINEL + r"\2" + _SENT_SENTINEL, protected)
     for ab in _ABBREVIATIONS:
         protected = re.sub(rf"\b({ab})\.", r"\1" + _SENT_SENTINEL, protected, flags=re.IGNORECASE)
-    protected = re.sub(r"(\d)\.(\d)", r"\1" + _SENT_SENTINEL + r"\2", protected)  # decimals
+    protected = re.sub(r"(\d)\.(\d)", r"\1" + _SENT_SENTINEL + r"\2", protected)
 
     pieces = re.split(r"(?<=[.!?])\s+", protected)
     out = []
@@ -235,15 +295,37 @@ def _split_sentences(text: str) -> List[str]:
     return out
 
 
+def _normalize_candidates(word: str):
+    yield word
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        yield word[:-1]
+    if len(word) > 4 and word.endswith("ies"):
+        yield word[:-3] + "y"
+    if len(word) > 4 and word.endswith("ied"):
+        yield word[:-3] + "y"
+    if len(word) > 4 and word.endswith("ed"):
+        yield word[:-2]
+        yield word[:-1]
+    if len(word) > 5 and word.endswith("ing"):
+        yield word[:-3]
+        yield word[:-3] + "e"
+
+
+def _lexicon_hit(word: str):
+    for cand in _normalize_candidates(word):
+        hit = _SINGLE_KEYWORDS.get(cand)
+        if hit is not None:
+            return hit
+    return None
+
+
 def _plural_norm(word: str) -> str:
-    """Conservative recall fallback: drop a regular trailing plural -s."""
     if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
         return word[:-1]
     return word
 
 
 def _context_modifier(words: List[str], idx: int, window: int = 2) -> float:
-    """Scale a keyword's weight by nearby boosters / diminishers."""
     factor = 1.0
     for w in words[max(0, idx - window):idx]:
         if w in _BOOSTERS:
@@ -257,21 +339,60 @@ def _check_negation(words: List[str], keyword_index: int, window: int = 3) -> bo
     start = max(0, keyword_index - window)
     return any(w.lower() in _NEGATION_WORDS for w in words[start:keyword_index])
 
-def _analyze_with_keywords(text: str) -> Dict[str, float]:
+
+def _negated_emotions(text: str) -> set:
+    lowered = _expand_contractions(text.lower())
+    words = re.findall(r"\b\w+\b", lowered)
+    present, negated = set(), set()
+    for idx, word in enumerate(words):
+        hit = _lexicon_hit(word)
+        if hit is None:
+            continue
+        (negated if _check_negation(words, idx) else present).add(hit[0])
+    for pattern, emotion, _ in _PHRASE_KEYWORDS:
+        for m in pattern.finditer(lowered):
+            preceding = re.findall(r"\b\w+\b", lowered[:m.start()])
+            (negated if _check_negation(preceding, len(preceding)) else present).add(emotion)
+    return negated - present
+
+
+_HIGH_AROUSAL = {"anxiety", "anger", "joy", "wonder", "fear", "awe"}
+_LOW_AROUSAL = {"calm", "melancholy", "tenderness", "nostalgia", "disgust", "hope"}
+
+
+def _squash(x: float, k: float = 0.9) -> float:
+    return x / (x + k) if x > 0 else 0.0
+
+
+def valence_of(emotions: Dict[str, float]) -> float:
+    pos = sum(emotions.get(e, 0.0) for e in POSITIVE_EMOTIONS)
+    neg = sum(emotions.get(e, 0.0) for e in NEGATIVE_EMOTIONS)
+    total = pos + neg
+    return (pos - neg) / total if total > 0 else 0.0
+
+
+def arousal_of(emotions: Dict[str, float]) -> float:
+    hi = sum(emotions.get(e, 0.0) for e in _HIGH_AROUSAL)
+    lo = sum(emotions.get(e, 0.0) for e in _LOW_AROUSAL)
+    total = hi + lo
+    return hi / total if total > 0 else 0.0
+
+
+def _analyze_with_keywords(text: str, _return_raw: bool = False):
     lowered = _expand_contractions(text.lower())
     words = re.findall(r"\b\w+\b", lowered)
     scores = {e: 0.0 for e in EMOTIONS}
 
+
     for idx, word in enumerate(words):
-        hit = _SINGLE_KEYWORDS.get(word)
-        if hit is None:
-            hit = _SINGLE_KEYWORDS.get(_plural_norm(word))
+        hit = _lexicon_hit(word)
         if hit is None:
             continue
         if _check_negation(words, idx):
             continue
         emotion, weight = hit
         scores[emotion] += weight * _context_modifier(words, idx)
+
 
     for pattern, emotion, weight in _PHRASE_KEYWORDS:
         for m in pattern.finditer(lowered):
@@ -282,8 +403,13 @@ def _analyze_with_keywords(text: str) -> Dict[str, float]:
 
     max_score = max(scores.values())
     if max_score > 0:
-        return {k: min(v / max_score, 1.0) for k, v in scores.items()}
-    return {e: 0.1 for e in EMOTIONS}
+        normalized = {k: min(v / max_score, 1.0) for k, v in scores.items()}
+    else:
+        normalized = {e: 0.1 for e in EMOTIONS}
+
+    if _return_raw:
+        return normalized, scores
+    return normalized
 
 
 def _analyze_with_transformer(text: str) -> Dict[str, float]:
@@ -319,12 +445,17 @@ def _analyze_with_transformer(text: str) -> Dict[str, float]:
         n = len(sentences)
         aggregated = {k: min(v / n, 1.0) for k, v in aggregated.items()}
 
-        kw = _analyze_with_keywords(text)
-        for emo, coeff in _KEYWORD_OVERLAY.items():
-            aggregated[emo] = max(aggregated[emo], kw.get(emo, 0.0) * coeff)
 
-        if max(aggregated.values()) < 0.3:
-            aggregated = {k: aggregated[k] * 0.6 + kw.get(k, 0.0) * 0.4 for k in EMOTIONS}
+        kw, kw_raw = _analyze_with_keywords(text, _return_raw=True)
+        if max(kw_raw.values()) > 0:
+            for emo, coeff in _KEYWORD_OVERLAY.items():
+                aggregated[emo] = max(aggregated[emo], kw.get(emo, 0.0) * coeff)
+            if max(aggregated.values()) < 0.3:
+                aggregated = {k: aggregated[k] * 0.6 + kw.get(k, 0.0) * 0.4 for k in EMOTIONS}
+
+
+        for emo in _negated_emotions(text):
+            aggregated[emo] *= 0.15
 
         return aggregated
     except Exception as e:
@@ -333,7 +464,6 @@ def _analyze_with_transformer(text: str) -> Dict[str, float]:
 
 
 def _extract_json_object(raw: str) -> Optional[dict]:
-    """Parse a JSON object from a model reply, tolerating fences or stray prose."""
     cleaned = raw.strip()
     cleaned = cleaned.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     try:
@@ -372,9 +502,10 @@ def _analyze_with_api(text: str) -> Dict[str, float]:
             logger.warning("API returned unparseable JSON — falling back to local model.")
             return _analyze_with_transformer(text)
         return {e: max(0.0, min(1.0, float(data.get(e, 0.0)))) for e in EMOTIONS}
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("API error: %s — falling back to local model.", e)
         return _analyze_with_transformer(text)
+
 
 def analyze_emotions(text: str, mode: str = "balanced") -> Dict[str, float]:
     if not text or len(text.strip()) < 3:
@@ -385,6 +516,37 @@ def analyze_emotions(text: str, mode: str = "balanced") -> Dict[str, float]:
     if mode == "fast":
         return _analyze_with_keywords(text)
     return _analyze_with_transformer(text)
+
+
+def _analyze_full(text: str, mode: str = "balanced") -> Tuple[Dict[str, float], float]:
+    if not text or len(text.strip()) < 3:
+        return {e: 0.1 for e in EMOTIONS}, 0.0
+
+    if mode == "precise" and os.environ.get("ANTHROPIC_API_KEY"):
+        profile = _analyze_with_api(text)
+        return profile, max(profile.values())
+    if mode == "fast":
+        profile, raw = _analyze_with_keywords(text, _return_raw=True)
+        return profile, max(raw.values())
+    profile = _analyze_with_transformer(text)
+    return profile, max(profile.values())
+
+
+def analyze(text: str, mode: str = "balanced") -> dict:
+    profile, magnitude = _analyze_full(text, mode)
+    has_signal = magnitude >= _NEUTRAL_FLOOR
+    if has_signal:
+        dom_em, dom_sc = max(profile.items(), key=lambda x: x[1])
+    else:
+        dom_em, dom_sc = NEUTRAL, 0.0
+    return {
+        "emotions": profile,
+        "dominant_emotion": dom_em,
+        "dominant_score": dom_sc,
+        "intensity": round(_squash(magnitude), 4),
+        "valence": round(valence_of(profile), 4) if has_signal else 0.0,
+        "arousal": round(arousal_of(profile), 4) if has_signal else 0.0,
+    }
 
 
 def emotions_to_palette(emotions: Dict[str, float], n_colors: int = 5) -> List[str]:
@@ -422,14 +584,17 @@ def emotions_to_palette(emotions: Dict[str, float], n_colors: int = 5) -> List[s
 
 
 def text_to_palette(text: str, n_colors: int = 5, mode: str = "balanced") -> dict:
-    emotions = analyze_emotions(text, mode=mode)
+    emotions, magnitude = _analyze_full(text, mode=mode)
     palette = emotions_to_palette(emotions, n_colors=n_colors)
-    dominant = max(emotions.items(), key=lambda x: x[1])
+    if magnitude >= _NEUTRAL_FLOOR:
+        dom_em, dom_sc = max(emotions.items(), key=lambda x: x[1])
+    else:
+        dom_em, dom_sc = NEUTRAL, 0.0
     return {
         "emotions": emotions,
         "palette": palette,
-        "dominant_emotion": dominant[0],
-        "dominant_score": dominant[1],
+        "dominant_emotion": dom_em,
+        "dominant_score": dom_sc,
     }
 
 
@@ -438,17 +603,34 @@ def analyze_emotions_by_sentence(text: str, mode: str = "balanced") -> List[Dict
     if not sentences:
         return []
 
+
+    raw = [(sent, *_analyze_full(sent, mode)) for sent in sentences]
+
+
+    mags = sorted(m for _, _, m in raw)
+    scale = mags[min(len(mags) - 1, int(0.92 * len(mags)))] if mags else 0.0
+    if scale <= 0 and mags:
+        scale = mags[-1]
+
     results = []
-    for sent in sentences:
-        emotions = analyze_emotions(sent, mode=mode)
-        dominant_em, dominant_sc = max(emotions.items(), key=lambda x: x[1])
-        color = emotions_to_palette(emotions, n_colors=1)[0]
+    for sent, emotions, magnitude in raw:
+        intensity = min(magnitude / scale, 1.0) if scale > 0 else 0.0
+        has_signal = magnitude >= _NEUTRAL_FLOOR
+        if has_signal:
+            dominant_em, dominant_sc = max(emotions.items(), key=lambda x: x[1])
+            color = emotions_to_palette(emotions, n_colors=1)[0]
+        else:
+            dominant_em, dominant_sc = NEUTRAL, 0.0
+            color = NEUTRAL_COLOR
         results.append({
             "sentence":       sent,
             "emotions":       emotions,
             "dominant":       dominant_em,
             "dominant_score": dominant_sc,
             "color":          color,
+            "intensity":      round(intensity, 4),
+            "valence":        round(valence_of(emotions), 4) if has_signal else 0.0,
+            "arousal":        round(arousal_of(emotions), 4) if has_signal else 0.0,
         })
     return results
 
@@ -457,7 +639,7 @@ def highlight_keywords_html(text: str, sentence_analysis: List[Dict]) -> str:
     if not sentence_analysis:
         return text
 
-    # keyword → {color, emotion}
+
     keyword_color_map: Dict[str, Dict] = {}
     for emotion, entries in _LEXICON.items():
         hue = EMOTION_HUE_MAP[emotion]
@@ -519,3 +701,48 @@ def highlight_keywords_html(text: str, sentence_analysis: List[Dict]) -> str:
         output_parts.append("".join(highlighted) + punct)
 
     return " ".join(output_parts)
+
+
+def _hex_to_rgba(hex_color: str, alpha: float) -> str:
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    return f"rgba({r},{g},{b},{round(alpha, 3)})"
+
+
+def shade_sentences_html(text: str, sentence_analysis: List[Dict]) -> str:
+    if not sentence_analysis:
+        return html.escape(text).replace("\n", "<br>")
+
+    out, cursor = [], 0
+    for item in sentence_analysis:
+        sent = item["sentence"]
+        pos = text.find(sent, cursor)
+        if pos == -1:
+            continue
+
+        out.append(html.escape(text[cursor:pos]))
+
+        emotion = item["dominant"]
+        intensity = max(0.0, min(1.0, item.get("intensity", 0.0)))
+
+        if intensity < 0.04:
+            out.append(html.escape(sent))
+            cursor = pos + len(sent)
+            continue
+
+        color = EMOTION_DISPLAY_COLORS.get(emotion, "#888888")
+        bg = _hex_to_rgba(color, 0.06 + 0.44 * intensity)
+
+        top = sorted(item["emotions"].items(), key=lambda x: x[1], reverse=True)[:3]
+        tip = " · ".join(f"{e.capitalize()} {int(s * 100)}%" for e, s in top if s > 0.05)
+
+        out.append(
+            f'<span title="{tip}" style="background:{bg};'
+            f'box-shadow:inset 3px 0 0 {color};border-radius:3px;'
+            f'padding:1px 4px;transition:background .2s;">'
+            f'{html.escape(sent)}</span>'
+        )
+        cursor = pos + len(sent)
+
+    out.append(html.escape(text[cursor:]))
+    return "".join(out).replace("\n", "<br>")
